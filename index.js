@@ -6,7 +6,7 @@ import { loadProxies } from './lib/proxy.js';
 import { isChannelMember, joinMenu, joinRequiredText } from './lib/join.js';
 import { isOwner } from './lib/helpers.js';
 import { createBaileysSocket, getUserSessionDir } from './lib/whatsapp.js';
-import { SESSIONS_DIR } from './config.js';
+import { SESSIONS_DIR, BOT_TOKEN } from './config.js';
 import { registerUserHandlers } from './handlers/user.js';
 import { registerWaHandlers } from './handlers/wa.js';
 import { registerOwnerHandlers } from './handlers/owner.js';
@@ -14,6 +14,11 @@ import { registerTextHandler } from './handlers/text.js';
 import { registerDocumentHandler } from './handlers/document.js';
 
 console.log('🤖 Bot starting...');
+
+if (!BOT_TOKEN || BOT_TOKEN === 'YOUR_TELEGRAM_BOT_TOKEN') {
+  console.error('❌ BOT_TOKEN belum diisi! Copy .env.example ke .env lalu isi token dari @BotFather.');
+  process.exit(1);
+}
 
 await initDatabase();
 await loadProxies();
@@ -59,7 +64,9 @@ bot.action('verify_join', async (ctx) => {
     return ctx.answerCbQuery('❌ Kamu belum join channel. Join dulu lalu klik lagi!', { show_alert: true });
   }
   await ctx.answerCbQuery('✅ Terverifikasi!');
-  await ctx.editMessageText('✅ <b>Verifikasi berhasil!</b>\n\nSekarang kirim /start untuk lanjut pakai bot.', { parse_mode: 'HTML' });
+  try {
+    await ctx.editMessageText('✅ <b>Verifikasi berhasil!</b>\n\nSekarang kirim /start untuk lanjut pakai bot.', { parse_mode: 'HTML' });
+  } catch (e) {}
 });
 
 bot.catch((err, ctx) => {
@@ -69,6 +76,9 @@ bot.catch((err, ctx) => {
 bot.launch().then(() => {
   console.log('✅ Bot running');
   setTimeout(restoreSessions, 3000);
+}).catch((e) => {
+  console.error('❌ Gagal menjalankan bot:', e?.message || e);
+  process.exit(1);
 });
 
 async function restoreSessions() {
@@ -81,8 +91,7 @@ async function restoreSessions() {
       if (!isOwner(userId)) continue;
       const credsFile = path.join(getUserSessionDir(userId), 'creds.json');
       if (!(await fs.pathExists(credsFile))) continue;
-      const state = userStates.get(userId) || {};
-      userStates.set(userId, { ...state, connected: false, restoring: true });
+      userStates.set(userId, { ...userStates.get(userId), connected: false });
       console.log(`🔄 Auto-restoring WhatsApp session for user ${userId}...`);
       try {
         await createBaileysSocket(userId);

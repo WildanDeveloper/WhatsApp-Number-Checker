@@ -1,4 +1,4 @@
-import { bot, userStates } from '../lib/state.js';
+import { bot, userStates, clearFlowState } from '../lib/state.js';
 import { getUserMenu, backBtn } from '../lib/menus.js';
 import { esc, isOwner, quotaText, fmtNum } from '../lib/helpers.js';
 import { registerUser, saveUsers, saveQuota, getReferralCode, countReferrals, getTraffic } from '../lib/database.js';
@@ -10,8 +10,9 @@ export function registerUserHandlers() {
     const userId = ctx.from.id;
     const username = ctx.from.username || null;
     const refCode = ctx.startPayload || null;
-    const { isNew, referrerId } = registerUser(userId, username, refCode);
+    const { isNew, referrerId } = await registerUser(userId, username, refCode);
     await Promise.all([saveUsers(), saveQuota()]);
+    clearFlowState(userId);
 
     const isAdmin = isOwner(userId);
     const refLine = isNew && referrerId
@@ -41,8 +42,7 @@ export function registerUserHandlers() {
 
   bot.action('main_menu', async (ctx) => {
     const userId = ctx.from.id;
-    const state = userStates.get(userId) || {};
-    userStates.set(userId, { ...state, awaitingPhone: false, awaitingManual: false, awaitingFile: false, awaitingBroadcast: false, awaitingAddQuotaId: false, awaitingAddQuotaAmount: false, addQuotaTarget: null });
+    clearFlowState(userId);
     await ctx.answerCbQuery();
     await ctx.editMessageText(
       `<b>🏠 Menu Utama</b>\n\n` + quotaText(userId),

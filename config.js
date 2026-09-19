@@ -5,7 +5,12 @@ import { fileURLToPath } from 'url';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export const BOT_TOKEN = process.env.BOT_TOKEN || 'YOUR_TELEGRAM_BOT_TOKEN';
-export const ADMIN_ID = process.env.ADMIN_ID ? parseInt(process.env.ADMIN_ID) : null;
+
+const ADMIN_ID_RAW = (process.env.ADMIN_ID || '').trim();
+export const ADMIN_ID = /^\d+$/.test(ADMIN_ID_RAW) ? parseInt(ADMIN_ID_RAW, 10) : null;
+if (ADMIN_ID_RAW && ADMIN_ID === null) {
+  console.warn('⚠️ ADMIN_ID tidak valid (harus angka) — fitur owner dinonaktifkan');
+}
 
 export const QUOTA_PER_DAY = 50;
 export const QUOTA_RESET_HOURS = 24;
@@ -19,4 +24,4 @@ export const CHECKS_DIR = path.join(__dirname, 'checks');
 export const DATABASE_DIR = path.join(__dirname, 'database');
 export const QUOTA_FILE = path.join(DATABASE_DIR, 'quota.json');
 export const USERS_FILE = path.join(DATABASE_DIR, 'users.json');
-export const PROXY_FILE = '/root/proxy_alive_result.txt';
+export const PROXY_FILE = process.env.PROXY_FILE || path.join(__dirname, 'proxies.txt');

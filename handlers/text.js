@@ -1,9 +1,18 @@
 import fs from 'fs-extra';
-import { bot, userSessions, userStates } from '../lib/state.js';
+import { bot, userStates } from '../lib/state.js';
 import { getUserMenu, getOwnerMenu, backBtn } from '../lib/menus.js';
 import { esc, isOwner, quotaText } from '../lib/helpers.js';
-import { useQuota, refundQuota, addQuota, getQuota, saveQuota, getAllUsers, logTraffic } from '../lib/database.js';
-import { getActiveSocket, createBaileysSocket, getUserSessionDir } from '../lib/whatsapp.js';
+import { useQuota, refundQuota, addQuota, saveQuota, getAllUsers, logTraffic } from '../lib/database.js';
+import { getActiveSocket, createBaileysSocket, getUserSessionDir, killSocket } from '../lib/whatsapp.js';
+
+async function editOrReply(ctx, msgId, text, extra) {
+  if (msgId) {
+    try {
+      return await bot.telegram.editMessageText(ctx.from.id, msgId, undefined, text, extra);
+    } catch (e) {}
+  }
+  return ctx.reply(text, extra);
+}
 
 export function registerTextHandler() {
   bot.on('text', async (ctx) => {
@@ -24,16 +33,25 @@ export function registerTextHandler() {
           await bot.telegram.sendMessage(id, `<b>📣 Broadcast:</b>\n\n${esc(msg)}`, { parse_mode: 'HTML' });
           sent++;
         } catch (e) {
-          failed++;
+          if (e?.response?.error_code === 429) {
+            const retryAfter = (e?.response?.parameters?.retry_after || 1) * 1000;
+            await new Promise((r) => setTimeout(r, retryAfter));
+            try {
+              await bot.telegram.sendMessage(id, `<b>📣 Broadcast:</b>\n\n${esc(msg)}`, { parse_mode: 'HTML' });
+              sent++;
+            } catch (e2) {
+              failed++;
+            }
+          } else {
+            failed++;
+          }
         }
+        await new Promise((r) => setTimeout(r, 50));
       }
       const result = `✅ <b>Broadcast selesai!</b>\n📤 Terkirim: ${sent}\n❌ Gagal: ${failed}`;
-      if (state.instructionMsgId) {
-        await bot.telegram.editMessageText(userId, state.instructionMsgId, undefined, result, { parse_mode: 'HTML', ...getOwnerMenu() });
-      } else {
-        await ctx.reply(result, { parse_mode: 'HTML', ...getOwnerMenu() });
-      }
-      userStates.delete(userId);
+      const cur = userStates.get(userId) || {};
+      await editOrReply(ctx, state.instructionMsgId, result, { parse_mode: 'HTML', ...getOwnerMenu() });
+      userStates.set(userId, { ...cur, awaitingBroadcast: false, instructionMsgId: null });
       return;
     }
 
@@ -41,12 +59,12 @@ export function registerTextHandler() {
       if (!isOwner(userId)) return;
       const raw = text.trim();
       if (!/^\d+$/.test(raw)) {
-        await bot.telegram.editMessageText(userId, state.instructionMsgId, undefined, '❌ <b>User ID tidak valid</b>\n\nMasukkan <b>User ID</b> yang mau ditambah kuotanya (hanya angka):', { parse_mode: 'HTML', ...backBtn() });
+        await editOrReply(ctx, state.instructionMsgId, '❌ <b>User ID tidak valid</b>\n\nMasukkan <b>User ID</b> yang mau ditambah kuotanya (hanya angka):', { parse_mode: 'HTML', ...backBtn() });
         return;
       }
       const targetId = raw;
-      userStates.set(userId, { awaitingAddQuotaAmount: true, addQuotaTarget: targetId, instructionMsgId: state.instructionMsgId });
-      await bot.telegram.editMessageText(userId, state.instructionMsgId, undefined, `➕ Berapa kuota tambahan untuk <code>${targetId}</code>? <b>(angka)</b>`, { parse_mode: 'HTML', ...backBtn() });
+      userStates.set(userId, { ...userStates.get(userId), awaitingAddQuotaId: false, awaitingAddQuotaAmount: true, addQuotaTarget: targetId });
+      await editOrReply(ctx, state.instructionMsgId, `➕ Berapa kuota tambahan untuk <code>${targetId}</code>? <b>(angka)</b>`, { parse_mode: 'HTML', ...backBtn() });
       return;
     }
 
@@ -56,37 +74,48 @@ export function registerTextHandler() {
       const amount = Number(raw);
       const targetId = state.addQuotaTarget;
       if (!/^\d+$/.test(raw) || !Number.isSafeInteger(amount) || amount <= 0) {
-        await bot.telegram.editMessageText(userId, state.instructionMsgId, undefined, `❌ <b>Jumlah tidak valid</b>\n\nMasukkan angka untuk <code>${targetId}</code>:` , { parse_mode: 'HTML', ...backBtn() });
+        await editOrReply(ctx, state.instructionMsgId, `❌ <b>Jumlah tidak valid</b>\n\nMasukkan angka untuk <code>${targetId}</code>:`, { parse_mode: 'HTML', ...backBtn() });
         return;
       }
       await addQuota(targetId, amount);
       const result = `✅ Kuota <code>${targetId}</code> ditambah <b>${amount}</b> nomor.`;
-      if (state.instructionMsgId) {
-        await bot.telegram.editMessageText(userId, state.instructionMsgId, undefined, result, { parse_mode: 'HTML', ...getOwnerMenu() });
-      } else {
-        await ctx.reply(result, { parse_mode: 'HTML', ...getOwnerMenu() });
-      }
-      userStates.delete(userId);
+      const cur = userStates.get(userId) || {};
+      await editOrReply(ctx, state.instructionMsgId, result, { parse_mode: 'HTML', ...getOwnerMenu() });
+      userStates.set(userId, { ...cur, awaitingAddQuotaAmount: false, addQuotaTarget: null, instructionMsgId: null });
       return;
     }
 
     if (state.awaitingPhone) {
       const phone = text.replace(/\D/g, '');
       if (phone.length < 8) {
-        await bot.telegram.editMessageText(userId, state.instructionMsgId, undefined, '❌ Nomor terlalu pendek. Masukkan nomor lengkap dengan kode negara (contoh: 628xxxxxxxxxx, 15551234567, 447xxx...)', { parse_mode: 'HTML', ...backBtn() });
+        await editOrReply(ctx, state.instructionMsgId, '❌ Nomor terlalu pendek. Masukkan nomor lengkap dengan kode negara (contoh: 628xxxxxxxxxx, 15551234567, 447xxx...)', { parse_mode: 'HTML', ...backBtn() });
         return;
       }
 
+      killSocket(userId);
       await fs.remove(getUserSessionDir(userId));
 
-      userStates.set(userId, { ...state, awaitingPhone: false, awaitingQR: true, phone, qrSent: false, pairingRequested: false });
-      if (state.instructionMsgId) {
-        await bot.telegram.editMessageText(userId, state.instructionMsgId, undefined, `🔄 Menghubungkan ke <b>${phone}</b>...\n🔗 Kode pairing akan dikirim sebentar...`, { parse_mode: 'HTML', ...backBtn() });
-      } else {
-        await ctx.reply(`🔄 Menghubungkan ke <b>${phone}</b>...\n🔗 Kode pairing akan dikirim sebentar...`, { parse_mode: 'HTML' });
-      }
+      userStates.set(userId, {
+        ...userStates.get(userId),
+        awaitingPhone: false,
+        awaitingQR: true,
+        phone,
+        qrSent: false,
+        pairingRequested: false,
+        pairingCodeSent: false,
+        pairingFailed: false,
+        awaitingPairing: false,
+        connected: false,
+        reconnectAttempts: 0,
+      });
+      await editOrReply(ctx, state.instructionMsgId, `🔄 Menghubungkan ke <b>${phone}</b>...\n🔗 Kode pairing akan dikirim sebentar...`, { parse_mode: 'HTML', ...backBtn() });
 
-      await createBaileysSocket(userId);
+      try {
+        await createBaileysSocket(userId);
+      } catch (e) {
+        console.error('Connect error:', e);
+        await editOrReply(ctx, state.instructionMsgId, '❌ Gagal menghubungkan WhatsApp: ' + esc(e?.message || String(e)) + '\n\nCoba lagi lewat menu "Hubungkan WhatsApp".', { parse_mode: 'HTML', ...backBtn() });
+      }
       return;
     }
 
@@ -111,7 +140,7 @@ export function registerTextHandler() {
       if (!quota.ok) {
         await del(state.instructionMsgId);
         const sent = await ctx.reply(`❌ <b>Kuota habis!</b>\n\n` + quotaText(userId), { parse_mode: 'HTML', ...getUserMenu(userId) });
-        userStates.set(userId, { ...state, awaitingManual: false, instructionMsgId: sent.message_id });
+        userStates.set(userId, { ...userStates.get(userId), awaitingManual: false, instructionMsgId: sent.message_id });
         return;
       }
 

@@ -1,4 +1,4 @@
-import { bot, userStates } from '../lib/state.js';
+import { userStates } from '../lib/state.js';
 import { getOwnerMenu, backBtn } from '../lib/menus.js';
 import { esc, isOwner, fmtNum } from '../lib/helpers.js';
 import { getAllUsers, getAllQuota, resetAllQuota } from '../lib/database.js';
@@ -47,7 +47,7 @@ export function registerOwnerHandlers() {
     if (!isOwner(userId)) return ctx.answerCbQuery('⛔ Khusus owner', { show_alert: true });
     await ctx.answerCbQuery();
     const sent = await ctx.editMessageText('📣 <b>Broadcast</b>\n\nKirim pesan yang mau di-broadcast ke semua user:', { parse_mode: 'HTML', ...backBtn() });
-    userStates.set(userId, { awaitingBroadcast: true, instructionMsgId: sent.message_id });
+    userStates.set(userId, { ...userStates.get(userId), awaitingBroadcast: true, instructionMsgId: sent.message_id });
   });
 
   bot.action('owner_reset_quota', async (ctx) => {
@@ -64,6 +64,6 @@ export function registerOwnerHandlers() {
     if (!isOwner(userId)) return ctx.answerCbQuery('⛔ Khusus owner', { show_alert: true });
     await ctx.answerCbQuery();
     const sent = await ctx.editMessageText('➕ <b>Tambah Kuota</b>\n\nMasukkan <b>User ID</b> yang mau ditambah kuotanya:', { parse_mode: 'HTML', ...backBtn() });
-    userStates.set(userId, { awaitingAddQuotaId: true, instructionMsgId: sent.message_id });
+    userStates.set(userId, { ...userStates.get(userId), awaitingAddQuotaId: true, instructionMsgId: sent.message_id });
   });
 }

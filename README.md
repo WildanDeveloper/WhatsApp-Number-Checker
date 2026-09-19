@@ -81,8 +81,9 @@ nokos-checker/
 
 - Akun WhatsApp yang digunakan **AKAN KENA BAN** (device ban / permanent ban)
 - Bukan "kalau", tapi "kapan" - biasanya 1-7 hari
+- Nomor yang dipakai mengecek adalah nomor WhatsApp yang dihubungkan oleh owner/admin — semua user memakai session tersebut, jadi semua risiko ban ditanggung nomor itu
 - Gunakan nomor **khusus/baru** yang siap diganti kapan saja
-- Rate limit: bot sudah pakai delay 1 detik per nomor, tapi tetap berisiko
+- Rate limit: bot sudah pakai delay 0,5 detik per nomor, tapi tetap berisiko
 - **Gunakan dengan risiko sendiri**
 
 ## Troubleshooting

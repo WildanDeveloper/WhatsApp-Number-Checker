@@ -8,13 +8,14 @@ import { getActiveSocket, getUserCheckDir } from '../lib/whatsapp.js';
 
 export function registerDocumentHandler() {
   bot.on('document', async (ctx) => {
+    if (!ctx.from || ctx.chat?.type !== 'private') return;
     const userId = ctx.from.id;
     const state = userStates.get(userId);
 
     if (!state?.awaitingFile) return;
 
     const doc = ctx.message.document;
-    if (!doc.file_name.endsWith('.txt')) {
+    if (!doc.file_name || !doc.file_name.toLowerCase().endsWith('.txt')) {
       return ctx.reply('❌ Hanya file .txt yang didukung');
     }
 
@@ -24,15 +25,27 @@ export function registerDocumentHandler() {
 
     await ctx.reply('📥 Mendownload file...');
 
+    let numbers = null;
+    let quotaCharged = 0;
+    let processed = 0;
+    const errors = [];
+    const registered = [];
+    const unregistered = [];
+    let progressMsg = null;
+    const checkDir = getUserCheckDir(userId);
+    const timestamp = Date.now();
+
     try {
       const fileLink = await bot.telegram.getFileLink(doc.file_id);
       const response = await fetch(fileLink.href);
       const content = await response.text();
 
-      const numbers = content
-        .split(/[\n,;]+/)
-        .map(l => l.replace(/[^\d]/g, ''))
-        .filter(n => n.length >= 8 && n.length <= 15);
+      numbers = [...new Set(
+        content
+          .split(/[\n,;]+/)
+          .map(l => l.replace(/[^\d]/g, ''))
+          .filter(n => n.length >= 8 && n.length <= 15)
+      )];
 
       if (numbers.length === 0) {
         return ctx.reply('❌ Tidak ada nomor valid di file (minimal 8 digit, maksimal 15 digit)');
@@ -40,13 +53,13 @@ export function registerDocumentHandler() {
 
       const sock = getActiveSocket(userId);
       if (!sock) {
-        userStates.set(userId, { ...state, awaitingFile: false });
+        userStates.set(userId, { ...userStates.get(userId), awaitingFile: false });
         return ctx.reply('❌ WhatsApp belum terhubung di server');
       }
 
       const quota = useQuota(userId, numbers.length);
       if (!quota.ok) {
-        userStates.set(userId, { ...state, awaitingFile: false });
+        userStates.set(userId, { ...userStates.get(userId), awaitingFile: false });
         return ctx.reply(
           `❌ <b>Kuota tidak cukup!</b>\n\n` +
           `Butuh: <b>${numbers.length}</b> nomor\n` +
@@ -55,26 +68,20 @@ export function registerDocumentHandler() {
           { parse_mode: 'HTML', ...getUserMenu(userId) }
         );
       }
+      quotaCharged = numbers.length;
 
-      const progressMsg = await ctx.reply(`🔍 Memeriksa <b>${numbers.length}</b> nomor...`, Markup.inlineKeyboard([
+      progressMsg = await ctx.reply(`🔍 Memeriksa <b>${numbers.length}</b> nomor...`, Markup.inlineKeyboard([
         [Markup.button.callback('⏹ Batalkan Cek', 'cancel_check')]
       ]));
 
-      userStates.set(userId, { ...state, awaitingFile: true, checking: true, cancelCheck: false, progressMsgId: progressMsg.message_id });
+      userStates.set(userId, { ...userStates.get(userId), awaitingFile: false, checking: true, cancelCheck: false, progressMsgId: progressMsg.message_id });
 
-      const registered = [];
-      const unregistered = [];
-      const errors = [];
-
-      const checkDir = getUserCheckDir(userId);
-      await fs.ensureDir(checkDir);
-      const timestamp = Date.now();
-
-      let processed = 0;
       for (let i = 0; i < numbers.length; i++) {
         const currentState = userStates.get(userId);
         if (currentState?.cancelCheck) {
-          await ctx.telegram.editMessageText(userId, currentState.progressMsgId, undefined, '⏹ Cek dibatalkan oleh user');
+          try {
+            await ctx.telegram.editMessageText(userId, currentState.progressMsgId, undefined, '⏹ Cek dibatalkan oleh user');
+          } catch (e) {}
           break;
         }
 
@@ -92,33 +99,28 @@ export function registerDocumentHandler() {
         }
 
         if ((i + 1) % 10 === 0 || i === numbers.length - 1) {
-          const currentState = userStates.get(userId);
-          if (currentState?.progressMsgId) {
+          const cur = userStates.get(userId);
+          if (cur?.progressMsgId) {
             try {
-              await ctx.telegram.editMessageText(userId, currentState.progressMsgId, undefined, 
+              await ctx.telegram.editMessageText(userId, cur.progressMsgId, undefined,
                 `⏳ <b>Progress:</b> ${i + 1}/${numbers.length}\n✅ Terdaftar: ${registered.length}\n❌ Belum: ${unregistered.length}\n⚠️ Error: ${errors.length}`,
                 { parse_mode: 'HTML', ...Markup.inlineKeyboard([[Markup.button.callback('⏹ Batalkan Cek', 'cancel_check')]]) }
               );
-            } catch (e) {
-            }
+            } catch (e) {}
           }
         }
 
         await new Promise(r => setTimeout(r, 500));
       }
 
-      const finalState = userStates.get(userId);
-      if (finalState?.cancelCheck) {
-        const remaining = numbers.length - processed;
-        if (remaining > 0) {
-          refundQuota(userId, remaining);
-        }
-        logTraffic(userId, 'file', processed);
-        await saveQuota();
-      } else {
-        logTraffic(userId, 'file', processed);
-        await saveQuota();
+      const refundCount = (quotaCharged - processed) + errors.length;
+      if (refundCount > 0) refundQuota(userId, refundCount);
+      logTraffic(userId, 'file', processed - errors.length);
+      await saveQuota();
 
+      const finalState = userStates.get(userId);
+      if (!finalState?.cancelCheck) {
+        await fs.ensureDir(checkDir);
         const regFile = path.join(checkDir, `registered_${timestamp}.txt`);
         const unregFile = path.join(checkDir, `unregistered_${timestamp}.txt`);
 
@@ -140,13 +142,25 @@ export function registerDocumentHandler() {
         if (unregistered.length > 0) {
           await ctx.replyWithDocument({ source: unregFile, filename: `unregistered_${timestamp}.txt` });
         }
-      }
 
+        if (progressMsg) {
+          try {
+            await ctx.telegram.editMessageText(userId, progressMsg.message_id, undefined,
+              `✅ <b>Selesai!</b> ✅ ${registered.length} · ❌ ${unregistered.length} · ⚠️ ${errors.length}`,
+              { parse_mode: 'HTML' }
+            );
+          } catch (e) {}
+        }
+      }
     } catch (e) {
       console.error('File check error:', e);
+      const refundCount = (quotaCharged - processed) + errors.length;
+      if (refundCount > 0) refundQuota(userId, refundCount);
+      try { await saveQuota(); } catch (e2) {}
       await ctx.reply('❌ Gagal memproses file');
     }
 
-    userStates.set(userId, { ...state, awaitingFile: false, checking: false, cancelCheck: false });
+    const cur = userStates.get(userId) || {};
+    userStates.set(userId, { ...cur, awaitingFile: false, checking: false, cancelCheck: false, progressMsgId: null });
   });
 }
